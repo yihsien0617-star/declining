@@ -4,40 +4,47 @@ import folium
 from streamlit_folium import st_folium
 import plotly.express as px
 
-# --- 1. 頁面基本設定 ---
-st.set_page_config(page_title="招生生源一二階轉換分析系統", layout="wide")
-st.title("📊 申請入學 一、二階生源轉換與地理分析")
+st.set_page_config(page_title="招生三階段漏斗分析系統", layout="wide")
+st.title("📊 申請入學 三階段生源漏斗與地理分析")
 
-# --- 2. 側邊欄：檔案上傳區 ---
+# --- 1. 側邊欄：檔案上傳區 ---
 st.sidebar.header("📂 資料上傳區")
-st.sidebar.markdown("請上傳已包含**學校緯度**與**學校經度**的檔案")
+st.sidebar.markdown("💡 **提示**：只需在【一階名單】準備經緯度與學校資料，二、三階名單只需包含`身分證字號`即可。")
 
-file_stage1 = st.sidebar.file_uploader("上傳【第一階段】名單 (CSV/Excel)", type=["csv", "xlsx"])
-file_stage2 = st.sidebar.file_uploader("上傳【第二階段】名單 (CSV/Excel)", type=["csv", "xlsx"])
+file_stage1 = st.sidebar.file_uploader("1️⃣ 上傳【第一階段】總表 (需含經緯度與身分證字號)", type=["csv", "xlsx"])
+file_stage2 = st.sidebar.file_uploader("2️⃣ 上傳【第二階段】名單 (需含身分證字號)", type=["csv", "xlsx"])
+file_stage3 = st.sidebar.file_uploader("3️⃣ 上傳【最終入學】名單 (需含身分證字號)", type=["csv", "xlsx"])
 
-# --- 3. 資料讀取與合併功能 ---
+# --- 2. 資料讀取與比對邏輯 (核心升級) ---
 @st.cache_data
-def load_data(f1, f2):
-    if f1.name.endswith('.csv'):
-        df1 = pd.read_csv(f1)
-    else:
-        df1 = pd.read_excel(f1)
-    df1['階段'] = '第一階段'
+def load_and_merge_data(f1, f2, f3):
+    # 讀取一階母體資料
+    df = pd.read_csv(f1) if f1.name.endswith('.csv') else pd.read_excel(f1)
+    
+    # 預設所有人都是「1_僅通過一階」
+    df['最終狀態'] = '1_僅通過一階'
 
-    if f2.name.endswith('.csv'):
-        df2 = pd.read_csv(f2)
-    else:
-        df2 = pd.read_excel(f2)
-    df2['階段'] = '第二階段'
+    # 如果有上傳二階名單，進行身分證比對
+    if f2:
+        df2 = pd.read_csv(f2) if f2.name.endswith('.csv') else pd.read_excel(f2)
+        stage2_ids = df2['身分證字號'].astype(str).tolist()
+        # 將有在二階名單中的人，狀態升級
+        df.loc[df['身分證字號'].astype(str).isin(stage2_ids), '最終狀態'] = '2_進入二階(未入學)'
 
-    combined_df = pd.concat([df1, df2], ignore_index=True)
-    return combined_df
+    # 如果有上傳最終入學名單，進行身分證比對
+    if f3:
+        df3 = pd.read_csv(f3) if f3.name.endswith('.csv') else pd.read_excel(f3)
+        stage3_ids = df3['身分證字號'].astype(str).tolist()
+        # 將有在入學名單中的人，狀態升級到最高
+        df.loc[df['身分證字號'].astype(str).isin(stage3_ids), '最終狀態'] = '3_最終入學'
 
-# --- 4. 主程式邏輯 ---
-if file_stage1 and file_stage2:
+    return df
+
+# --- 3. 主程式介面 ---
+if file_stage1: # 只要有一階總表就能開始跑，二三階是選配加強
     try:
-        df = load_data(file_stage1, file_stage2)
-        st.sidebar.success("✅ 兩份名單載入成功！")
+        df = load_and_merge_data(file_stage1, file_stage2, file_stage3)
+        st.sidebar.success("✅ 資料載入與比對完成！")
         
         # --- 篩選器 ---
         departments = df['系(組)、學程名稱'].dropna().unique().tolist()
@@ -49,82 +56,99 @@ if file_stage1 and file_stage2:
         else:
             st.subheader("目前顯示：全校總覽")
 
-        # --- 新增：關鍵指標 (KPI) 區塊 ---
-        stage1_count = len(df[df['階段'] == '第一階段'])
-        stage2_count = len(df[df['階段'] == '第二階段'])
-        conversion_rate = (stage2_count / stage1_count * 100) if stage1_count > 0 else 0
+        # --- KPI 儀表板 ---
+        # 計算各階段人數
+        s1_count = len(df) # 一階就是所有人
+        s2_count = len(df[df['最終狀態'].isin(['2_進入二階(未入學)', '3_最終入學'])])
+        s3_count = len(df[df['最終狀態'] == '3_最終入學'])
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric("第一階段總人數", f"{stage1_count} 人")
-        col2.metric("第二階段總人數", f"{stage2_count} 人")
-        col3.metric("整體二階轉換率", f"{conversion_rate:.1f} %")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("第一階段總人數", f"{s1_count} 人")
+        col2.metric("進入第二階段", f"{s2_count} 人", f"轉換率 {(s2_count/s1_count*100):.1f}%" if s1_count else "0%")
+        col3.metric("最終註冊入學", f"{s3_count} 人", f"報到率 {(s3_count/s2_count*100):.1f}%" if s2_count else "0%")
+        col4.metric("一階至入學(總留存)", f"{(s3_count/s1_count*100):.1f} %" if s1_count else "0 %")
         st.markdown("---")
 
-        # --- 建立三個頁籤 ---
-        tab1, tab2, tab3 = st.tabs(["🗺️ 畢業學校地圖分析", "📉 區域轉換率圖表", "📋 詳細統計資料表"])
+        # --- 頁籤 ---
+        tab1, tab2, tab3 = st.tabs(["🗺️ 最終狀態地理分布", "📉 生源漏斗分析圖", "📋 高中端轉換率明細"])
 
         with tab1:
-            st.markdown("🔴 **紅點**：僅參加第一階段 (未進入二階) ｜ 🔵 **藍點**：進入第二階段")
-            # 預設地圖中心 (以 Chung Hwa University of Medical Technology 概略座標為中心)
+            st.markdown("🔴 **紅點**：僅通過一階 ｜ 🔵 **藍點**：進入二階(未入學) ｜ 🟢 **綠點**：最終入學")
             m = folium.Map(location=[22.934, 120.246], zoom_start=8, tiles='CartoDB positron')
             
-            for idx, row in df[df['階段'] == '第一階段'].iterrows():
-                if pd.notnull(row.get('學校緯度')) and pd.notnull(row.get('學校經度')):
-                    folium.CircleMarker(
-                        location=[row['學校緯度'], row['學校經度']],
-                        radius=4, color="red", fill=True, fill_color="red", fill_opacity=0.4,
-                        popup=f"{row['畢業學校']} (一階)", tooltip=row['畢業學校']
-                    ).add_to(m)
+            # 定義不同狀態的顏色
+            color_map = {
+                '1_僅通過一階': 'red',
+                '2_進入二階(未入學)': 'blue',
+                '3_最終入學': 'green'
+            }
 
-            for idx, row in df[df['階段'] == '第二階段'].iterrows():
-                if pd.notnull(row.get('學校緯度')) and pd.notnull(row.get('學校經度')):
-                    folium.CircleMarker(
-                        location=[row['學校緯度'], row['學校經度']],
-                        radius=4, color="blue", fill=True, fill_color="blue", fill_opacity=0.7,
-                        popup=f"{row['畢業學校']} (二階)", tooltip=row['畢業學校']
-                    ).add_to(m)
+            # 為了讓綠點(入學)顯示在最上層，我們依照順序繪製
+            for status in ['1_僅通過一階', '2_進入二階(未入學)', '3_最終入學']:
+                subset = df[df['最終狀態'] == status]
+                for _, row in subset.iterrows():
+                    if pd.notnull(row.get('學校緯度')) and pd.notnull(row.get('學校經度')):
+                        folium.CircleMarker(
+                            location=[row['學校緯度'], row['學校經度']],
+                            radius=4 if status != '3_最終入學' else 5, # 讓入學的點稍微大一點
+                            color=color_map[status], 
+                            fill=True, 
+                            fill_color=color_map[status], 
+                            fill_opacity=0.6,
+                            popup=f"{row['畢業學校']} ({status.split('_')[1]})", 
+                            tooltip=row['畢業學校']
+                        ).add_to(m)
 
             st_folium(m, width=1000, height=600)
 
         with tab2:
-            st.markdown("### 主要生源學校 一階 vs 二階 比較 (TOP 15)")
-            school_stats = df.groupby(['畢業學校', '階段']).size().reset_index(name='人數')
+            st.markdown("### 主要生源學校 三階段漏斗比較 (TOP 15)")
+            school_stats = df.groupby(['畢業學校', '最終狀態']).size().reset_index(name='人數')
             
-            # 找出第一階段人數最多的前 15 所高中
-            top_schools = school_stats[school_stats['階段'] == '第一階段'].nlargest(15, '人數')['畢業學校']
+            # 找出總人數(一階)最多的前 15 所高中
+            top_schools = df['畢業學校'].value_counts().nlargest(15).index
             filtered_stats = school_stats[school_stats['畢業學校'].isin(top_schools)]
             
             fig = px.bar(
-                filtered_stats, x='畢業學校', y='人數', color='階段', 
-                barmode='group',
-                color_discrete_map={'第一階段': '#EF553B', '第二階段': '#00CC96'},
-                text_auto=True # 自動在柱子上顯示數字
+                filtered_stats, x='畢業學校', y='人數', color='最終狀態', 
+                barmode='stack', # 改用堆疊圖更能看出漏斗流失比例
+                color_discrete_map={
+                    '1_僅通過一階': '#EF553B', 
+                    '2_進入二階(未入學)': '#636EFA',
+                    '3_最終入學': '#00CC96'
+                },
+                text_auto=True
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # --- 新增：統計資料與明細頁籤 ---
         with tab3:
-            st.markdown(f"### 🏆 {selected_dept} - 各高中生源統計與轉換率明細")
-            st.info("💡 提示：您可以點擊表格右上角的圖示，將這份統計資料下載為 CSV 檔。")
+            st.markdown(f"### 🏆 {selected_dept} - 各高中三階段轉換率明細")
             
-            # 製作一二階人數的樞紐分析表
-            pivot_df = df.groupby(['畢業學校', '階段']).size().unstack(fill_value=0).reset_index()
+            # 建立透視表
+            pivot_df = df.groupby(['畢業學校', '最終狀態']).size().unstack(fill_value=0).reset_index()
             
-            # 確保欄位存在 (避免某些系只有一階沒有二階資料會報錯)
-            if '第一階段' not in pivot_df.columns: pivot_df['第一階段'] = 0
-            if '第二階段' not in pivot_df.columns: pivot_df['第二階段'] = 0
-                
-            # 計算該高中的二階轉換率
-            pivot_df['二階轉換率(%)'] = (pivot_df['第二階段'] / pivot_df['第一階段'] * 100).round(1)
-            pivot_df['二階轉換率(%)'] = pivot_df['二階轉換率(%)'].fillna(0) # 處理分母為0的狀況
+            # 補齊可能缺失的欄位
+            for col in ['1_僅通過一階', '2_進入二階(未入學)', '3_最終入學']:
+                if col not in pivot_df.columns:
+                    pivot_df[col] = 0
             
-            # 依照第一階段人數由高到低排序
-            pivot_df = pivot_df.sort_values(by='第一階段', ascending=False).reset_index(drop=True)
+            # 重新計算還原三個階段的累積人數
+            pivot_df['[A]一階總人數'] = pivot_df['1_僅通過一階'] + pivot_df['2_進入二階(未入學)'] + pivot_df['3_最終入學']
+            pivot_df['[B]二階總人數'] = pivot_df['2_進入二階(未入學)'] + pivot_df['3_最終入學']
+            pivot_df['[C]最終入學人數'] = pivot_df['3_最終入學']
             
-            # 顯示表格 (設定 use_container_width 讓表格自動適應螢幕寬度)
-            st.dataframe(pivot_df, use_container_width=True)
+            # 計算轉換率
+            pivot_df['一階轉二階(%)'] = (pivot_df['[B]二階總人數'] / pivot_df['[A]一階總人數'] * 100).round(1).fillna(0)
+            pivot_df['二階轉入學(%)'] = (pivot_df['[C]最終入學人數'] / pivot_df['[B]二階總人數'] * 100).round(1).fillna(0)
+            pivot_df['總留存率(%)'] = (pivot_df['[C]最終入學人數'] / pivot_df['[A]一階總人數'] * 100).round(1).fillna(0)
+            
+            # 整理要顯示的欄位並排序
+            display_cols = ['畢業學校', '[A]一階總人數', '[B]二階總人數', '[C]最終入學人數', '一階轉二階(%)', '二階轉入學(%)', '總留存率(%)']
+            final_df = pivot_df[display_cols].sort_values(by='[A]一階總人數', ascending=False).reset_index(drop=True)
+            
+            st.dataframe(final_df, use_container_width=True)
 
     except Exception as e:
-        st.error(f"資料處理發生錯誤，請確認上傳的檔案格式與欄位是否正確。錯誤訊息：{e}")
+        st.error(f"資料處理發生錯誤，請確認上傳的檔案格式與欄位（需包含'身分證字號'）。錯誤訊息：{e}")
 else:
-    st.info("👈 請在左側上傳【第一階段】與【第二階段】的檔案，開始進行分析。")
+    st.info("👈 請在左側上傳【第一階段總表】以開始分析。")
